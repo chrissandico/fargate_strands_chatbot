@@ -53,19 +53,24 @@ def get_parameter(service_name, parameter_name):
     if in_docker:
         print(f"Running in Docker container, using default value for {service_name}/{parameter_name}")
         # For Perplexity API key, use a default value for testing
-        if service_name == 'perplexity' and parameter_name == 'api-key':
-            default_key = os.environ.get('PERPLEXITY_API_KEY', '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')
-            print(f"Using default key from Docker: {default_key[:5]}...")
+    if service_name == 'perplexity' and parameter_name == 'api-key':
+        default_key = os.environ.get('PERPLEXITY_API_KEY')
+        if default_key:
+            print(f"Using API key from Docker environment: {default_key[:5] if default_key else 'None'}...")
             return default_key
+        print("No API key found in Docker environment")
         return None
     
     # Skip AWS Parameter Store for local development
     print("Skipping AWS Parameter Store for local development")
     if service_name == 'perplexity' and parameter_name == 'api-key':
-        # Use the hardcoded API key for local development
-        hardcoded_key = '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'
-        print(f"Using hardcoded API key for local development: {hardcoded_key[:5]}...")
-        return hardcoded_key
+        # Check for API key in environment variables
+        env_key = os.environ.get('PERPLEXITY_API_KEY')
+        if env_key:
+            print(f"Using API key from environment variables: {env_key[:5]}...")
+            return env_key
+        print("No API key found in environment variables")
+        return None
     
     # If environment variable is not set and not in Docker, try AWS Parameter Store
     # This code is kept for reference but not used in local development

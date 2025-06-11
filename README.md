@@ -114,6 +114,40 @@ This project is designed to be extended with additional agents. Future plans inc
 1. **Deck Recommendation Agent**: Provide competitive deck recommendations using the GumGum.gg API
 2. **Shopping Agent**: Help users purchase cards using the Shopify MCP server
 
+## Security Best Practices
+
+### Handling Secrets
+
+⚠️ **IMPORTANT**: A Perplexity API key was previously hardcoded in the codebase and exposed in the Git repository. If you're using this key, please invalidate it immediately and generate a new one.
+
+Follow these best practices for handling secrets:
+
+1. **Never hardcode secrets** in your source code, even for development or testing purposes
+2. **Use environment variables** for local development:
+   ```
+   # Store in .env file (which is in .gitignore)
+   PERPLEXITY_API_KEY=your-api-key
+   ```
+3. **Use AWS Parameter Store** for production:
+   ```bash
+   aws ssm put-parameter \
+       --name "/tcg-agent/production/perplexity/api-key" \
+       --value "your-api-key" \
+       --type "SecureString" \
+       --overwrite
+   ```
+4. **Use placeholder values** in example code and documentation
+5. **Regularly rotate** API keys and other secrets
+6. **Set up Git pre-commit hooks** to prevent committing secrets (consider using tools like `git-secrets` or `detect-secrets`)
+7. **Monitor for exposed secrets** using GitHub's secret scanning or similar tools
+
+### What to Do If You Accidentally Commit a Secret
+
+1. **Invalidate the secret immediately** - generate a new API key, password, etc.
+2. **Remove the secret from Git history** - this is challenging and may require force-pushing, which can disrupt team workflows
+3. **Notify relevant stakeholders** about the potential exposure
+4. **Review access logs** for any suspicious activity
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
