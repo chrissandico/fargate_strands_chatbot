@@ -39,3 +39,12 @@ var/
 .vscode/
 *.swp
 *.swo
+
+# Local testing files
+test_*.py
+.env
+run_docker_local*.ps1
+run_docker_local.sh
+*_response.txt
+setup_parameter_store.ps1
+setup_parameter_store.sh

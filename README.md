@@ -1,136 +1,119 @@
-# AWS CDK Fargate Deployment Example
+# TCG Assistant API
 
-## Introduction
+This project implements a Trading Card Game (TCG) Assistant API using FastAPI and Strands Agents. The API provides endpoints for weather information and card research.
 
-This is a TypeScript-based CDK (Cloud Development Kit) example that demonstrates how to deploy a Python application to AWS Fargate. The example deploys a weather forecaster application that runs as a containerized service in AWS Fargate with an Application Load Balancer. The application is built with FastAPI and provides two weather endpoints:
+## Features
 
-1. `/weather` - A standard endpoint that returns weather information based on the provided prompt
-2. `/weather-streaming` - A streaming endpoint that delivers weather information in real-time as it's being generated
+### Weather Assistant
+- `/weather` - Get weather information for a location
+- `/weather-streaming` - Stream weather information for a location
+
+### Card Research Assistant
+- `/card-search` - Get information about a One Piece TCG card, including its ID
+- `/card-search-streaming` - Stream information about a One Piece TCG card
+
+## Architecture
+
+The application uses a multi-agent architecture:
+
+1. **Weather Agent**: Makes HTTP requests to the National Weather Service API to provide weather information
+2. **Card Research Agent**: Uses the Perplexity MCP server to search for One Piece TCG card information
 
 ## Prerequisites
 
-- [AWS CLI](https://aws.amazon.com/cli/) installed and configured
-- [Node.js](https://nodejs.org/) (v18.x or later)
-- Python 3.12 or later
-- Either:
-  - [Podman](https://podman.io/) installed and running
-  - (or) [Docker](https://www.docker.com/) installed and running
-## Project Structure
+- Python 3.12+
+- Docker
+- AWS CLI configured with appropriate permissions
+- Perplexity API key
 
-- `lib/` - Contains the CDK stack definition in TypeScript
-- `bin/` - Contains the CDK app entry point and deployment scripts:
-  - `cdk-app.ts` - Main CDK application entry point
-- `docker/` - Contains the Dockerfile and application code for the container:
-  - `Dockerfile` - Docker image definition
-  - `app/` - Application code
-  - `requirements.txt` - Python dependencies for the container & local development
+## Local Development
 
-## Setup and Deployment
+### Setup
 
-1. Install dependencies:
+1. Clone the repository
+2. Create a `.env` file with your Perplexity API key:
+   ```
+   PERPLEXITY_API_KEY=your-api-key
+   ```
+3. Install dependencies:
+   ```
+   pip install -r docker/requirements.txt
+   ```
 
-```bash
-# Install Node.js dependencies including CDK and TypeScript locally
-npm install
+### Running Locally
 
-# Create a Python virtual environment (optional but recommended)
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install Python dependencies for the local development
-pip install -r ./docker/requirements.txt
-```
-
-2. Bootstrap your AWS environment (if not already done):
+Run the FastAPI application:
 
 ```bash
-npx cdk bootstrap
+cd docker/app
+python -m uvicorn app:app --reload
 ```
 
-3. Ensure podman is started (one time):
+### Testing
+
+Test the weather endpoint:
 
 ```bash
-podman machine init
-podman machine start
+python test_weather_streaming.py "Seattle"
 ```
 
-4. Package & deploy via CDK:
+Test the card search endpoint:
 
 ```bash
-CDK_DOCKER=podman npx cdk deploy
+python test_card_search_local.py "Blue Doffy Leader"
 ```
 
-## Usage
+Options:
+- `--no-stream`: Use non-streaming endpoint
+- `--start-server`: Start the server automatically before testing
 
-After deployment, you can access the weather service using the Application Load Balancer URL that is output after deployment:
+## Deployment
+
+The application is deployed to AWS Fargate using CDK.
+
+### Prerequisites
+
+- AWS CDK installed
+- AWS CLI configured with appropriate permissions
+
+### Deploying
+
+1. Store the Perplexity API key in AWS Parameter Store:
+   ```bash
+   aws ssm put-parameter \
+       --name "/tcg-agent/production/perplexity/api-key" \
+       --value "your-api-key" \
+       --type "SecureString" \
+       --overwrite
+   ```
+
+2. Deploy the CDK stack:
+   ```bash
+   npm install
+   cdk deploy
+   ```
+
+### Testing the Deployed API
+
+Test the deployed weather endpoint:
 
 ```bash
-# Get the service URL from the CDK output
-SERVICE_URL=$(aws cloudformation describe-stacks --stack-name AgentFargateStack --query "Stacks[0].Outputs[?ExportName=='AgentServiceEndpoint'].OutputValue" --output text)
+python test_weather_streaming.py "Seattle"
 ```
 
-The service exposes a REST API endpoint that you can call using curl or any HTTP client:
+Test the deployed card search endpoint:
 
 ```bash
-
-
-# Call the weather service
-curl -X POST \
-  http://$SERVICE_URL/weather \
-  -H 'Content-Type: application/json' \
-  -d '{"prompt": "What is the weather in New York?"}'
-  
- # Call the streaming endpoint
- curl -X POST \
-  http://$SERVICE_URL/weather-streaming \
-  -H 'Content-Type: application/json' \
-  -d '{"prompt": "What is the weather in New York in Celsius?"}'
+python test_card_search.py "Blue Doffy Leader"
 ```
 
-## Local testing (python)
+## Adding More Agents
 
-You can run the python app directly for local testing via:
+This project is designed to be extended with additional agents. Future plans include:
 
-```bash
-python ./docker/app/app.py
-```
+1. **Deck Recommendation Agent**: Provide competitive deck recommendations using the GumGum.gg API
+2. **Shopping Agent**: Help users purchase cards using the Shopify MCP server
 
-Then, set the SERVICE_URL to point to your local server
+## License
 
-```bash
-SERVICE_URL=127.0.0.1:8000
-```
-
-and you can use the curl commands above to test locally.
-
-## Local testing (container)
-
-Build & run the container:
-
-```bash
-podman build ./docker/ -t agent_container
-podman run -p 127.0.0.1:8000:8000 -t agent_container
-```
-
-Then, set the SERVICE_URL to point to your local server
-
-```bash
-SERVICE_URL=127.0.0.1:8000
-```
-
-and you can use the curl commands above to test locally.
-
-## Cleanup
-
-To remove all resources created by this example:
-
-```bash
-npx cdk destroy
-```
-
-## Additional Resources
-
-- [AWS CDK TypeScript Documentation](https://docs.aws.amazon.com/cdk/latest/guide/work-with-cdk-typescript.html)
-- [AWS Fargate Documentation](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate.html)
-- [Docker Documentation](https://docs.docker.com/)
-- [TypeScript Documentation](https://www.typescriptlang.org/docs/)
+This project is licensed under the MIT License - see the LICENSE file for details.

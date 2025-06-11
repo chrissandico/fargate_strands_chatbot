@@ -47,6 +47,19 @@ export class AgentFargateStack extends Stack {
         resources: ["*"],
       }),
     );
+    
+    // Add permissions for the task to access Parameter Store
+    taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ],
+        resources: [
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/tcg-agent/production/*`
+        ],
+      }),
+    );
 
     // Create a task definition
     const taskDefinition = new ecs.FargateTaskDefinition(this, "AgentTaskDefinition", {
