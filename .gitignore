@@ -43,6 +43,7 @@ var/
 # Local testing files
 test_*.py
 .env
+**/.env
 run_docker_local*.ps1
 run_docker_local.sh
 *_response.txt
