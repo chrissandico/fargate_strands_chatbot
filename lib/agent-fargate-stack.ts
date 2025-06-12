@@ -35,29 +35,46 @@ export class AgentFargateStack extends Stack {
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AmazonECSTaskExecutionRolePolicy")],
     });
 
-    // Create a task role with permissions to invoke Bedrock APIs
+    // Create a comprehensive task role with all necessary permissions
     const taskRole = new iam.Role(this, "AgentTaskRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+      description: "Comprehensive role for all agent services",
     });
 
-    // Add permissions for the task to invoke Bedrock APIs
+    // Add full permissions for Bedrock APIs
     taskRole.addToPolicy(
       new iam.PolicyStatement({
-        actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+        actions: [
+          "bedrock:*", // Full access to all Bedrock operations
+        ],
         resources: ["*"],
       }),
     );
     
-    // Add permissions for the task to access Parameter Store
+    // Add enhanced permissions for Parameter Store
     taskRole.addToPolicy(
       new iam.PolicyStatement({
         actions: [
           "ssm:GetParameter",
-          "ssm:GetParameters"
+          "ssm:GetParameters",
+          "ssm:GetParametersByPath"
         ],
         resources: [
-          `arn:aws:ssm:${this.region}:${this.account}:parameter/tcg-agent/production/*`
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/tcg-agent/*`
         ],
+      }),
+    );
+    
+    // Add CloudWatch Logs permissions
+    taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams"
+        ],
+        resources: ["*"],
       }),
     );
 

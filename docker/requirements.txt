@@ -7,3 +7,6 @@ mcp
 boto3
 python-dotenv
 requests
+watchtower
+pytest
+pytest-asyncio

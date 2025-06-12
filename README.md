@@ -1,6 +1,6 @@
-# TCG Assistant API
+# One Piece TCG Shopping Assistant
 
-This project implements a Trading Card Game (TCG) Assistant API using FastAPI and Strands Agents. The API provides endpoints for weather information and card research.
+This project implements a One Piece Trading Card Game (TCG) Shopping Assistant API using FastAPI and Strands Agents. The API provides endpoints for weather information, card research, and a coordinator agent that helps players find competitive decks and purchase cards.
 
 ## Features
 
@@ -12,12 +12,21 @@ This project implements a Trading Card Game (TCG) Assistant API using FastAPI an
 - `/card-search` - Get information about a One Piece TCG card, including its ID
 - `/card-search-streaming` - Stream information about a One Piece TCG card
 
+### Coordinator Agent
+- `/coordinator` - Get a response from the coordinator agent
+- `/coordinator-streaming` - Stream coordinator agent responses with reasoning events
+- `/coordinator-streaming-callback` - Stream coordinator agent responses using callback handlers
+
 ## Architecture
 
 The application uses a multi-agent architecture:
 
 1. **Weather Agent**: Makes HTTP requests to the National Weather Service API to provide weather information
-2. **Card Research Agent**: Uses the Perplexity MCP server to search for One Piece TCG card information
+2. **Card Research Agent**: Uses the Perplexity API to search for One Piece TCG card information
+3. **Coordinator Agent**: Orchestrates between specialized agents:
+   - **Deck Recommender**: Finds competitive tournament decks from GumGum.gg
+   - **Card Researcher**: Provides detailed information about specific cards
+   - **Shopify Client**: Connects to a Shopify store to check availability and pricing of cards
 
 ## Prerequisites
 
@@ -25,15 +34,20 @@ The application uses a multi-agent architecture:
 - Docker
 - AWS CLI configured with appropriate permissions
 - Perplexity API key
+- GumGum.gg API credentials (optional)
+- Shopify store domain (optional)
 
 ## Local Development
 
 ### Setup
 
 1. Clone the repository
-2. Create a `.env` file with your Perplexity API key:
+2. Create a `.env` file with your API keys:
    ```
    PERPLEXITY_API_KEY=your-api-key
+   COMPETITIVE_DECK_ENDPOINT=your-gumgum-api-endpoint
+   COMPETITIVE_DECK_SECRET=your-gumgum-api-key
+   SHOPIFY_STORE_DOMAIN=your-shopify-store-domain
    ```
 3. Install dependencies:
    ```
@@ -49,7 +63,36 @@ cd docker/app
 python -m uvicorn app:app --reload
 ```
 
+Or use the provided scripts:
+
+```bash
+# Windows
+./local_tests/run_coordinator_local.ps1
+
+# Unix
+./local_tests/run_coordinator_local.sh
+```
+
 ### Testing
+
+Test the coordinator agent:
+
+```bash
+# Test all endpoints
+python local_tests/test_coordinator_api.py "I want a recent Red Zoro competitive deck"
+
+# Test specific endpoint
+python local_tests/test_coordinator_api.py "I want a recent Red Zoro competitive deck" --endpoint streaming
+
+# Test with direct script
+python local_tests/test_coordinator_direct.py "I want a recent Red Zoro competitive deck"
+```
+
+Test the card search endpoint:
+
+```bash
+python local_tests/test_card_search_local.py "OP03-001 Roronoa Zoro"
+```
 
 Test the weather endpoint:
 
@@ -57,15 +100,17 @@ Test the weather endpoint:
 python test_weather_streaming.py "Seattle"
 ```
 
-Test the card search endpoint:
+### Docker Testing
+
+Run the application in a Docker container:
 
 ```bash
-python test_card_search_local.py "Blue Doffy Leader"
-```
+# Windows
+./local_tests/run_coordinator_docker.ps1
 
-Options:
-- `--no-stream`: Use non-streaming endpoint
-- `--start-server`: Start the server automatically before testing
+# Unix
+./local_tests/run_coordinator_docker.sh
+```
 
 ## Deployment
 
@@ -75,78 +120,112 @@ The application is deployed to AWS Fargate using CDK.
 
 - AWS CDK installed
 - AWS CLI configured with appropriate permissions
+- Node.js and npm installed
 
-### Deploying
+### Setting Up Parameters in AWS Parameter Store
 
-1. Store the Perplexity API key in AWS Parameter Store:
-   ```bash
-   aws ssm put-parameter \
-       --name "/tcg-agent/production/perplexity/api-key" \
-       --value "your-api-key" \
-       --type "SecureString" \
-       --overwrite
-   ```
-
-2. Deploy the CDK stack:
-   ```bash
-   npm install
-   cdk deploy
-   ```
-
-### Testing the Deployed API
-
-Test the deployed weather endpoint:
+Before deploying, you need to set up the required parameters in AWS Parameter Store. Use the provided scripts:
 
 ```bash
-python test_weather_streaming.py "Seattle"
+# Windows
+./setup_parameter_store.ps1
+
+# Unix
+chmod +x setup_parameter_store.sh
+./setup_parameter_store.sh
 ```
 
-Test the deployed card search endpoint:
+These scripts will prompt you for your Perplexity API key and store it securely in AWS Parameter Store.
+
+### Deploying to AWS
+
+Use the provided deployment scripts to deploy the application to AWS:
 
 ```bash
-python test_card_search.py "Blue Doffy Leader"
+# Windows
+./deploy.ps1
+
+# Unix
+chmod +x deploy.sh
+./deploy.sh
 ```
 
-## Adding More Agents
+These scripts will:
+1. Check if the required parameters are set up in AWS Parameter Store
+2. Install dependencies
+3. Bootstrap CDK (if needed)
+4. Deploy the application to AWS Fargate
+5. Test the deployed endpoints
 
-This project is designed to be extended with additional agents. Future plans include:
+After deployment, the script will output the endpoint URL of your deployed application.
 
-1. **Deck Recommendation Agent**: Provide competitive deck recommendations using the GumGum.gg API
-2. **Shopping Agent**: Help users purchase cards using the Shopify MCP server
+### Testing the Deployed Application
+
+The deployment scripts automatically test the deployed endpoints. You can also manually test them:
+
+```bash
+# Test the health endpoint
+curl http://your-endpoint-url/health
+
+# Test the coordinator endpoint
+curl -X POST http://your-endpoint-url/coordinator \
+    -H "Content-Type: application/json" \
+    -d '{"prompt": "Tell me about the OP03-001 Roronoa Zoro card"}'
+
+# Test the coordinator streaming endpoint
+curl -X POST http://your-endpoint-url/coordinator-streaming \
+    -H "Content-Type: application/json" \
+    -d '{"prompt": "Tell me about the OP03-001 Roronoa Zoro card"}'
+```
 
 ## Security Best Practices
 
+### AWS Authentication
+
+This project uses a centralized approach to AWS authentication to ensure consistent access across all parts of the application. See [AWS_AUTHENTICATION.md](AWS_AUTHENTICATION.md) for detailed documentation on:
+
+- Centralized AWS configuration module
+- Comprehensive task role for Fargate deployment
+- AWS profiles for local development
+- Troubleshooting AWS access issues
+
 ### Handling Secrets
 
-⚠️ **IMPORTANT**: A Perplexity API key was previously hardcoded in the codebase and exposed in the Git repository. If you're using this key, please invalidate it immediately and generate a new one.
+⚠️ **IMPORTANT**: Never hardcode secrets in your source code, even for development or testing purposes.
 
 Follow these best practices for handling secrets:
 
-1. **Never hardcode secrets** in your source code, even for development or testing purposes
-2. **Use environment variables** for local development:
+1. **Use environment variables** for local development:
    ```
    # Store in .env file (which is in .gitignore)
    PERPLEXITY_API_KEY=your-api-key
    ```
-3. **Use AWS Parameter Store** for production:
+2. **Use AWS Parameter Store** for production:
    ```bash
    aws ssm put-parameter \
        --name "/tcg-agent/production/perplexity/api-key" \
        --value "your-api-key" \
        --type "SecureString" \
        --overwrite
+   ```
+3. **Use the centralized AWS configuration** to access parameters:
+   ```python
+   from utils.aws_config import aws_config
+   api_key = aws_config.get_parameter("/tcg-agent/production/perplexity/api-key")
    ```
 4. **Use placeholder values** in example code and documentation
 5. **Regularly rotate** API keys and other secrets
 6. **Set up Git pre-commit hooks** to prevent committing secrets (consider using tools like `git-secrets` or `detect-secrets`)
 7. **Monitor for exposed secrets** using GitHub's secret scanning or similar tools
 
-### What to Do If You Accidentally Commit a Secret
+### Error Handling
 
-1. **Invalidate the secret immediately** - generate a new API key, password, etc.
-2. **Remove the secret from Git history** - this is challenging and may require force-pushing, which can disrupt team workflows
-3. **Notify relevant stakeholders** about the potential exposure
-4. **Review access logs** for any suspicious activity
+The application includes robust error handling with CloudWatch logging. If the card research agent fails, detailed error information is logged to CloudWatch, including:
+
+- Error type
+- Error message
+- Query parameters
+- Stack trace
 
 ## License
 

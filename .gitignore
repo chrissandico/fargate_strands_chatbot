@@ -49,3 +49,16 @@ run_docker_local.sh
 *_response.txt
 setup_parameter_store.ps1
 setup_parameter_store.sh
+
+# Local development and testing
+local_tests/
+deploy.ps1
+deploy.sh
+setup_aws_profile.ps1
+setup_aws_profile.sh
+AWS_AUTHENTICATION.md
+**/app_fixed.py
+run_*_test.ps1
+run_*_test.sh
+debug_*.py
+verify_*.py

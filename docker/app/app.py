@@ -4,6 +4,7 @@ from threading import Thread
 from typing import Iterator, Dict, Optional
 from uuid import uuid4
 import asyncio
+import json
 
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import StreamingResponse, PlainTextResponse
@@ -12,81 +13,86 @@ import uvicorn
 from strands import Agent, tool
 from strands_tools import http_request
 import os
-import boto3
 from mcp import StdioServerParameters, stdio_client
+from utils.aws_config import aws_config
 from mcp.client.streamable_http import streamablehttp_client
 from strands.tools.mcp import MCPClient
 from dotenv import load_dotenv
 
-# Load environment variables from .env file if present
-load_dotenv()
+from coordinator_agent import CoordinatorAgent
+from card_researcher import card_research_agent, CARD_RESEARCH_SYSTEM_PROMPT
+from utils.logging import get_logger
+from utils.streaming import queue_to_generator
 
-app = FastAPI(title="TCG Assistant API")
+# Load environment variables from .env files in multiple possible locations
+# This ensures we find the .env file regardless of where the script is run from
+possible_env_paths = [
+    '.env',  # Current directory
+    '../.env',  # Parent directory
+    '../../.env',  # Two levels up
+    '../../../.env',  # Three levels up
+    '../../local_tests/.env',  # local_tests directory from app directory
+    '../local_tests/.env',  # local_tests directory from parent directory
+]
+
+for env_path in possible_env_paths:
+    if os.path.exists(env_path):
+        logger = get_logger("app_init")
+        logger.info(f"Loading environment variables from {env_path}")
+        load_dotenv(env_path)
+        break
+
+# Configure logger
+logger = get_logger("app")
 
 # Function to retrieve parameters from AWS Parameter Store
 def get_parameter(service_name, parameter_name):
     """Retrieve a parameter from AWS Parameter Store."""
-    print(f"get_parameter called for {service_name}/{parameter_name}")
+    logger.info(f"get_parameter called for {service_name}/{parameter_name}")
     
     # For local development, use environment variables
     env_var_name = f"{service_name.upper()}_{parameter_name.upper().replace('-', '_')}"
-    print(f"Looking for environment variable: {env_var_name}")
+    logger.info(f"Looking for environment variable: {env_var_name}")
     env_value = os.environ.get(env_var_name)
-    print(f"Environment variable value: {env_value}")
+    logger.info(f"Environment variable value: {env_value[:5] if env_value else 'None'}")
     
     # Also check for direct PERPLEXITY_API_KEY
     if service_name == 'perplexity' and parameter_name == 'api-key':
         direct_api_key = os.environ.get('PERPLEXITY_API_KEY')
-        print(f"Direct PERPLEXITY_API_KEY: {direct_api_key}")
+        logger.info(f"Direct PERPLEXITY_API_KEY: {direct_api_key[:5] if direct_api_key else 'None'}")
         if direct_api_key:
-            print(f"Using direct PERPLEXITY_API_KEY")
+            logger.info(f"Using direct PERPLEXITY_API_KEY")
             return direct_api_key
     
     if env_value:
-        print(f"Using environment variable value")
+        logger.info(f"Using environment variable value")
         return env_value
     
     # Check if we're running in a Docker container (local development)
     in_docker = os.path.exists('/.dockerenv')
-    print(f"Running in Docker container: {in_docker}")
+    logger.info(f"Running in Docker container: {in_docker}")
     
     if in_docker:
-        print(f"Running in Docker container, using default value for {service_name}/{parameter_name}")
+        logger.info(f"Running in Docker container, using default value for {service_name}/{parameter_name}")
         # For Perplexity API key, use a default value for testing
-    if service_name == 'perplexity' and parameter_name == 'api-key':
-        default_key = os.environ.get('PERPLEXITY_API_KEY')
-        if default_key:
-            print(f"Using API key from Docker environment: {default_key[:5] if default_key else 'None'}...")
-            return default_key
-        print("No API key found in Docker environment")
-        return None
+        if service_name == 'perplexity' and parameter_name == 'api-key':
+            default_key = os.environ.get('PERPLEXITY_API_KEY')
+            if default_key:
+                logger.info(f"Using API key from Docker environment: {default_key[:5] if default_key else 'None'}...")
+                return default_key
+            logger.info("No API key found in Docker environment")
+            return None
     
-    # Skip AWS Parameter Store for local development
-    print("Skipping AWS Parameter Store for local development")
-    if service_name == 'perplexity' and parameter_name == 'api-key':
-        # Check for API key in environment variables
-        env_key = os.environ.get('PERPLEXITY_API_KEY')
-        if env_key:
-            print(f"Using API key from environment variables: {env_key[:5]}...")
-            return env_key
-        print("No API key found in environment variables")
-        return None
-    
-    # If environment variable is not set and not in Docker, try AWS Parameter Store
-    # This code is kept for reference but not used in local development
-    """
-    parameter_path = f"/tcg-agent/production/{service_name}/{parameter_name}"
+    # Try AWS Parameter Store using centralized AWS config
     try:
-        ssm = boto3.client('ssm', region_name='us-east-1')
-        response = ssm.get_parameter(
-            Name=parameter_path,
-            WithDecryption=True
-        )
-        return response['Parameter']['Value']
+        parameter_path = f"/tcg-agent/production/{service_name}/{parameter_name}"
+        logger.info(f"Trying AWS Parameter Store: {parameter_path}")
+        value = aws_config.get_parameter(parameter_path)
+        if value:
+            logger.info(f"Found parameter in AWS Parameter Store")
+            return value
     except Exception as e:
-        print(f"Error retrieving parameter {parameter_path}: {str(e)}")
-        return None
-    """
+        logger.error(f"Error retrieving parameter from AWS: {str(e)}")
     
     return None
 
@@ -115,6 +121,9 @@ tool and then continue with the summary.
 
 class PromptRequest(BaseModel):
     prompt: str
+
+# Create FastAPI app
+app = FastAPI(title="TCG Assistant API")
 
 @app.get('/health')
 def health_check():
@@ -184,150 +193,7 @@ async def get_weather_streaming(request: PromptRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Define a card research system prompt
-CARD_RESEARCH_SYSTEM_PROMPT = """You are a One Piece Trading Card Game expert assistant.
-When users mention card nicknames or descriptions, translate them to official card IDs.
-For example, "Blue Doffy Leader" should be translated to "OP01-060".
-Always include the card ID in your response when you find a match.
-Provide detailed information about the card including its effects, rarity, and set.
-
-Use web search to find accurate information about One Piece TCG cards.
-When searching, include terms like "One Piece TCG", "card ID", and specific card details.
-Always verify information from multiple sources when possible.
-
-Format your responses clearly with:
-1. Card ID (e.g., OP01-060)
-2. Card Name
-3. Card Type (Leader, Character, Event, etc.)
-4. Color
-5. Cost (if applicable)
-6. Power (if applicable)
-7. Counter (if applicable)
-8. Card Effect/Text
-9. Set Information
-10. Rarity
-
-If you cannot find a specific card ID, explain what information you found and suggest possible matches.
-"""
-
-@tool
-def card_research_agent(query: str) -> str:
-    """
-    Process and respond to card identification queries using Perplexity.
-    
-    Args:
-        query: A question about One Piece TCG cards
-        
-    Returns:
-        Detailed card information including card ID
-    """
-    formatted_query = f"Please identify this One Piece Trading Card Game card: {query}. Include the card ID, name, type, color, cost, power, counter, effect text, set information, and rarity."
-    
-    try:
-        print("Routed to Card Research Agent")
-        
-        # Get Perplexity API key directly from environment variables
-        perplexity_api_key = os.environ.get("PERPLEXITY_API_KEY")
-        print(f"PERPLEXITY_API_KEY from env: {perplexity_api_key}")
-        
-        if not perplexity_api_key:
-            # Fall back to Parameter Store only if environment variable is not set
-            perplexity_api_key = get_parameter('perplexity', 'api-key')
-            print(f"PERPLEXITY_API_KEY from parameter store: {perplexity_api_key}")
-            
-        if not perplexity_api_key:
-            return "Error: Perplexity API key not found. Please ensure the API key is set in environment variables or Parameter Store."
-        
-        print(f"Using PERPLEXITY_API_KEY: {perplexity_api_key[:5]}...")
-        
-        # Use direct API call to Perplexity
-        import requests
-        import json
-        
-        # Define the API endpoint
-        url = "https://api.perplexity.ai/chat/completions"
-        
-        # Define the request headers
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {perplexity_api_key}"
-        }
-        
-        # Define the request body
-        body = {
-            "model": "sonar-pro",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": formatted_query
-                }
-            ]
-        }
-        
-        print(f"Sending request to {url}...")
-        
-        # Send the request
-        response = requests.post(url, headers=headers, json=body)
-        
-        # Check if the request was successful
-        if response.status_code == 200:
-            print("Request successful!")
-            response_data = response.json()
-            
-            # Extract the message content
-            message_content = response_data["choices"][0]["message"]["content"]
-            
-            # Add citations if available
-            if "citations" in response_data and response_data["citations"]:
-                message_content += "\n\nCitations:\n"
-                for i, citation in enumerate(response_data["citations"]):
-                    message_content += f"[{i+1}] {citation}\n"
-            
-            print(f"Response length: {len(message_content)}")
-            print(f"Response preview: {message_content[:100]}...")
-            
-            return message_content
-        else:
-            error_message = f"Request failed with status code {response.status_code}: {response.text}"
-            print(error_message)
-            return f"Error: Failed to get response from Perplexity API. {error_message}"
-    except Exception as e:
-        print(f"Error processing card query: {str(e)}")
-        return f"Error processing your card query: {str(e)}"
-        
-        # The following code is kept for reference but not used and is unreachable
-        """
-        perplexity_mcp_server = MCPClient(
-            lambda: stdio_client(
-                StdioServerParameters(
-                    command="docker",
-                    args=[
-                        "run",
-                        "-i",
-                        "--rm",
-                        "-e",
-                        f"PERPLEXITY_API_KEY={perplexity_api_key}",
-                        "mcp/perplexity-ask",
-                    ],
-                    env={},
-                )
-            )
-        )
-
-        with perplexity_mcp_server:
-            # Get tools from the MCP server
-            tools = perplexity_mcp_server.list_tools_sync()
-            
-            # Create the card research agent
-            agent = Agent(
-                system_prompt=CARD_RESEARCH_SYSTEM_PROMPT,
-                tools=tools,
-            )
-            
-            # Get response from the agent
-            response = agent(formatted_query)
-            return str(response)
-        """
+# Card research system prompt and agent are now imported from card_researcher.py
 
 @app.post('/card-search')
 async def search_card(request: PromptRequest):
@@ -338,9 +204,26 @@ async def search_card(request: PromptRequest):
         raise HTTPException(status_code=400, detail="No prompt provided")
 
     try:
+        # Debug environment variables before calling card_research_agent
+        perplexity_api_key = os.environ.get("PERPLEXITY_API_KEY")
+        logger.info(f"PERPLEXITY_API_KEY before card_research_agent call: {'Present' if perplexity_api_key else 'Missing'}")
+        if perplexity_api_key:
+            logger.info(f"API key starts with: {perplexity_api_key[:5]}...")
+        else:
+            # Try to load .env file again if API key is missing
+            for env_path in possible_env_paths:
+                if os.path.exists(env_path):
+                    logger.info(f"Reloading environment variables from {env_path}")
+                    load_dotenv(env_path)
+                    perplexity_api_key = os.environ.get("PERPLEXITY_API_KEY")
+                    if perplexity_api_key:
+                        logger.info(f"API key found after reload: {perplexity_api_key[:5]}...")
+                        break
+        
         result = card_research_agent(prompt)
         return PlainTextResponse(content=result)
     except Exception as e:
+        logger.error(f"Error in card search endpoint: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 async def run_card_search_agent_and_stream_response(prompt: str):
@@ -359,118 +242,18 @@ async def run_card_search_agent_and_stream_response(prompt: str):
         return "Ok - continue providing the summary!"
 
     try:
-        # Get Perplexity API key directly from environment variables
-        perplexity_api_key = os.environ.get("PERPLEXITY_API_KEY")
-        print(f"PERPLEXITY_API_KEY from env (streaming): {perplexity_api_key}")
+        # Get the result from the card_research_agent
+        result = card_research_agent(prompt)
         
-        if not perplexity_api_key:
-            # Fall back to Parameter Store only if environment variable is not set
-            perplexity_api_key = get_parameter('perplexity', 'api-key')
-            print(f"PERPLEXITY_API_KEY from parameter store (streaming): {perplexity_api_key}")
+        # Simulate streaming by yielding chunks of the response
+        chunk_size = 50
+        for i in range(0, len(result), chunk_size):
+            yield result[i:i+chunk_size]
+            await asyncio.sleep(0.1)  # Add a small delay to simulate streaming
             
-        if not perplexity_api_key:
-            yield "Error: Perplexity API key not found. Please ensure the API key is set in environment variables or Parameter Store."
-            return
-            
-        print(f"Using PERPLEXITY_API_KEY (streaming): {perplexity_api_key[:5]}...")
-        
-        # Use direct API call to Perplexity
-        import requests
-        import json
-        
-        # Define the API endpoint
-        url = "https://api.perplexity.ai/chat/completions"
-        
-        # Define the request headers
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {perplexity_api_key}"
-        }
-        
-        # Define the formatted query
-        formatted_query = f"Please identify this One Piece Trading Card Game card: {prompt}. Include the card ID, name, type, color, cost, power, counter, effect text, set information, and rarity."
-        
-        # Define the request body
-        body = {
-            "model": "sonar-pro",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": formatted_query
-                }
-            ]
-        }
-        
-        print(f"Sending request to {url} (streaming)...")
-        
-        # Send the request
-        response = requests.post(url, headers=headers, json=body)
-        
-        # Check if the request was successful
-        if response.status_code == 200:
-            print("Request successful! (streaming)")
-            response_data = response.json()
-            
-            # Extract the message content
-            message_content = response_data["choices"][0]["message"]["content"]
-            
-            # Add citations if available
-            if "citations" in response_data and response_data["citations"]:
-                message_content += "\n\nCitations:\n"
-                for i, citation in enumerate(response_data["citations"]):
-                    message_content += f"[{i+1}] {citation}\n"
-            
-            print(f"Response length (streaming): {len(message_content)}")
-            
-            # Simulate streaming by yielding chunks of the response
-            chunk_size = 50
-            for i in range(0, len(message_content), chunk_size):
-                yield message_content[i:i+chunk_size]
-                await asyncio.sleep(0.1)  # Add a small delay to simulate streaming
-        else:
-            error_message = f"Request failed with status code {response.status_code}: {response.text}"
-            print(error_message)
-            yield f"Error: Failed to get response from Perplexity API. {error_message}"
-
-        # The following code is kept for reference but not used
-        """
-        perplexity_mcp_server = MCPClient(
-            lambda: stdio_client(
-                StdioServerParameters(
-                    command="docker",
-                    args=[
-                        "run",
-                        "-i",
-                        "--rm",
-                        "-e",
-                        f"PERPLEXITY_API_KEY={perplexity_api_key}",
-                        "mcp/perplexity-ask",
-                    ],
-                    env={},
-                )
-            )
-        )
-
-        with perplexity_mcp_server:
-            # Get tools from the MCP server
-            tools = perplexity_mcp_server.list_tools_sync()
-            
-            # Create the card research agent
-            formatted_query = f"Please identify this One Piece Trading Card Game card: {prompt}. Include the card ID, name, type, color, cost, power, counter, effect text, set information, and rarity."
-            
-            card_search_agent = Agent(
-                system_prompt=CARD_RESEARCH_SYSTEM_PROMPT,
-                tools=tools + [ready_to_summarize],
-                callback_handler=None
-            )
-            
-            async for item in card_search_agent.stream_async(formatted_query):
-                if not is_summarizing:
-                    continue
-                if "data" in item:
-                    yield item['data']
-        """
     except Exception as e:
+        logger = get_logger("app")
+        logger.error(f"Error processing card query: {str(e)}", exc_info=True)
         yield f"Error processing your card query: {str(e)}"
 
 @app.post('/card-search-streaming')
@@ -488,6 +271,99 @@ async def get_card_search_streaming(request: PromptRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# Initialize coordinator agent
+try:
+    coordinator_agent = CoordinatorAgent()
+    logger.info("Coordinator agent initialized successfully")
+except Exception as e:
+    logger.error(f"Error initializing coordinator agent: {str(e)}", exc_info=True)
+    coordinator_agent = None
+
+# Define coordinator endpoints
+@app.post('/coordinator')
+async def get_coordinator_response(request: PromptRequest):
+    """Endpoint to get a response from the coordinator agent."""
+    try:
+        if coordinator_agent is None:
+            logger.error("Coordinator agent not initialized")
+            raise HTTPException(status_code=500, detail="Coordinator agent not initialized")
+            
+        prompt = request.prompt
+        logger.info(f"Received prompt: {prompt}")
+
+        if not prompt:
+            raise HTTPException(status_code=400, detail="No prompt provided")
+
+        response = coordinator_agent.process_query(prompt)
+        logger.info(f"Generated response of length: {len(response)}")
+        return PlainTextResponse(content=response)
+    except Exception as e:
+        logger.error(f"Error in coordinator endpoint: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post('/coordinator-streaming')
+async def get_coordinator_streaming(request: PromptRequest):
+    """Endpoint to stream coordinator agent responses with reasoning events."""
+    try:
+        if coordinator_agent is None:
+            logger.error("Coordinator agent not initialized")
+            raise HTTPException(status_code=500, detail="Coordinator agent not initialized")
+            
+        prompt = request.prompt
+        logger.info(f"Received streaming prompt: {prompt}")
+
+        if not prompt:
+            raise HTTPException(status_code=400, detail="No prompt provided")
+
+        async def generate():
+            async for event in coordinator_agent.stream_async(prompt):
+                yield json.dumps(event) + "\n"
+
+        return StreamingResponse(
+            generate(),
+            media_type="application/json"
+        )
+    except Exception as e:
+        logger.error(f"Error in coordinator streaming endpoint: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post('/coordinator-streaming-callback')
+async def get_coordinator_streaming_callback(request: PromptRequest):
+    """Endpoint to stream coordinator agent responses using callback handler."""
+    try:
+        if coordinator_agent is None:
+            logger.error("Coordinator agent not initialized")
+            raise HTTPException(status_code=500, detail="Coordinator agent not initialized")
+            
+        prompt = request.prompt
+        logger.info(f"Received streaming callback prompt: {prompt}")
+
+        if not prompt:
+            raise HTTPException(status_code=400, detail="No prompt provided")
+
+        # Create a queue for streaming events
+        queue = asyncio.Queue()
+        
+        # Start agent in background task
+        task = asyncio.create_task(run_agent_with_callback(coordinator_agent, prompt, queue))
+        
+        return StreamingResponse(
+            queue_to_generator(queue),
+            media_type="application/json"
+        )
+    except Exception as e:
+        logger.error(f"Error in coordinator streaming callback endpoint: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def run_agent_with_callback(agent, prompt, queue):
+    """Run agent with callback handler and signal completion."""
+    try:
+        agent.stream_with_callback(prompt, queue)
+    except Exception as e:
+        logger = get_logger("app")
+        logger.error(f"Error running agent with callback: {str(e)}", exc_info=True)
+        await queue.put({"error": True, "message": str(e)})
 
 if __name__ == '__main__':
     # Get port from environment variable or default to 8000
