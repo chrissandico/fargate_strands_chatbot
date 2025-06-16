@@ -44,21 +44,27 @@ var/
 test_*.py
 .env
 **/.env
-run_docker_local*.ps1
-run_docker_local.sh
 *_response.txt
-setup_parameter_store.ps1
-setup_parameter_store.sh
 
 # Local development and testing
-local_tests/
-deploy.ps1
-deploy.sh
-setup_aws_profile.ps1
-setup_aws_profile.sh
+tests/local_tests/
+tests/unit_tests/
+tests/integration_tests/
+scripts/deploy.ps1
+scripts/deploy.sh
+scripts/setup_aws_profile.ps1
+scripts/setup_aws_profile.sh
+scripts/setup_parameter_store.ps1
+scripts/setup_parameter_store.sh
 AWS_AUTHENTICATION.md
 **/app_fixed.py
 run_*_test.ps1
 run_*_test.sh
 debug_*.py
 verify_*.py
+
+# Old directory structure (to be removed after migration)
+bin/
+lib/
+docker/
+local_tests/
